@@ -1,7 +1,7 @@
 from astropy.cosmology import Planck18
 import astropy.units as u
 import lal
-import lalsimulation as ls
+import lalsimulation as lalsim
 import numpy as np
 import os.path as op
 import sys
@@ -11,6 +11,11 @@ from tqdm import tqdm, trange
 import weighting
 import scipy.integrate as sint
 import intensity_models
+from fisher_snrs import compute_snrs
+
+SENSITIVITIES = {'aLIGO': lalsim.SimNoisePSDaLIGODesignSensitivityP1200087,
+                'aplus': lalsim.SimNoisePSDaLIGOAPlusDesignSensitivityT1800042,
+                'CE': lalsim.SimNoisePSDCosmicExplorerP1600143}
 
 def next_pow_2(x):
     np2 = 1
@@ -18,70 +23,49 @@ def next_pow_2(x):
         np2 = np2 << 1
     return np2
 
-def compute_snrs(d):
-    snrhs = []
-    snrls = []
-    snrvs = []
+def compute_snrs_old(d, detectors = ['H1', 'L1'], sensitivity = 'aLIGO', fmin = 20, fmax = 2048, psdstart = 20):
+    psdstop = 0.95*fmax
     snrs = []
-    for _, r in d.iterrows():
-        mlow = 5*(r.z-2)/(0.75-2) + 30*(r.z-0.75)/(2-0.75)
-        mhigh = 150*(r.z-2.5)/(1.5-2.5) + 70*(r.z-1.5)/(2.5-1.5)
-        if r.m1 > mlow and r.m1 < mhigh:
-            m2s = r.m1*r.q
-            m1d = r.m1*(1+r.z)
-            m2d = m2s*(1+r.z)
+    for _, r in tqdm(d.iterrows(), total=len(d)):
+        m2s = r.m1*r.q
+        m1d = r.m1*(1+r.z)
+        m2d = m2s*(1+r.z)
 
-            a1 = np.sqrt(r.s1x*r.s1x + r.s1y*r.s1y + r.s1z*r.s1z)
-            a2 = np.sqrt(r.s2x*r.s2x + r.s2y*r.s2y + r.s2z*r.s2z)
-            dl = d['dL'] * 1e9*lal.PC_SI
+        a1 = np.sqrt(r.s1x*r.s1x + r.s1y*r.s1y + r.s1z*r.s1z)
+        a2 = np.sqrt(r.s2x*r.s2x + r.s2y*r.s2y + r.s2z*r.s2z)
+        dl = r.dL * 1e9*lal.PC_SI
 
-            fmin = 9.0
-            fref = fmin
-            psdstart = 10.0
+        fref = fmin
 
-            T = next_pow_2(ls.SimInspiralChirpTimeBound(fmin, m1d*lal.MSUN_SI, m2d*lal.MSUN_SI, a1, a2))
-            df = 1/T
-            fmax = 2048.0
-            psdstop = 0.95*fmax
+        T = next_pow_2(lalsim.SimInspiralChirpTimeBound(fmin, m1d*lal.MSUN_SI, m2d*lal.MSUN_SI, a1, a2))
+        df = 1/T
 
-            Nf = int(round(fmax/df)) + 1
-            fs = np.linspace(0, fmax, Nf)
-
-            hp, hc = ls.SimInspiralChooseFDWaveform(m1d*lal.MSUN_SI, m2d*lal.MSUN_SI, r.s1x, r.s1y, r.s1z, r.s2x, r.s2y, r.s2z, dl, r.iota, 0.0, 0.0, 0.0, 0.0, df, fmin, fmax, fref, None, ls.IMRPhenomXPHM)
-
-            sn = []
-            for det in ['H1', 'L1', 'V1']:
-                h = lal.CreateCOMPLEX16FrequencySeries('h', hp.epoch, hp.f0, hp.deltaF, hp.sampleUnits, hp.data.data.shape[0])
-                psd = lal.CreateREAL8FrequencySeries("psds", 0, 0.0, df, lal.DimensionlessUnit, fs.shape[0])
-    
-                dd = lal.cached_detector_by_prefix[det]
-                Fp, Fc = lal.ComputeDetAMResponse(dd.response, r.ra, r.dec, r.psi, r.gmst)
-    
-                h.data.data = Fp*hp.data.data + Fc*hc.data.data
-
-                if det in ['H1', 'L1']:
-                    ls.SimNoisePSDaLIGODesignSensitivityP1200087(psd, psdstart)
-                else:
-                    ls.SimNoisePSDAdVDesignSensitivityP1200087(psd, psdstart)
-
-                sn.append(ls.MeasureSNRFD(h, psd, psdstart, psdstop))
-            sn = np.array(sn)
-            snrhs.append(sn[0])
-            snrls.append(sn[1])
-            snrvs.append(sn[2])
-            snrs.append(np.sqrt(np.sum(np.square(sn))))
-        else:
-            snrhs.append(0)
-            snrls.append(0)
-            snrvs.append(0)
+        Nf = int(round(fmax/df)) + 1
+        fs = np.linspace(0, fmax, Nf)
+        try:
+            hp, hc = lalsim.SimInspiralChooseFDWaveform(m1d*lal.MSUN_SI, m2d*lal.MSUN_SI, r.s1x, r.s1y, r.s1z, r.s2x, r.s2y, r.s2z, dl, r.iota, 0.0, 0.0, 0.0, 0.0, df, fmin, fmax, fref, None, lalsim.IMRPhenomD)
+        except Exception as e:
+            print(e.args)
             snrs.append(0)
+            continue
 
-    d['SNR_H1'] = snrhs
-    d['SNR_L1'] = snrls
-    d['SNR_V1'] = snrvs
-    d['SNR'] = snrs
+        sn = []
+        for det in detectors:
+            h = lal.CreateCOMPLEX16FrequencySeries('h', hp.epoch, hp.f0, hp.deltaF, hp.sampleUnits, hp.data.data.shape[0])
+            psd = lal.CreateREAL8FrequencySeries("psds", 0, 0.0, df, lal.DimensionlessUnit, fs.shape[0])
 
-    return d
+            dd = lal.cached_detector_by_prefix[det]
+            Fp, Fc = lal.ComputeDetAMResponse(dd.response, r.ra, r.dec, r.psi, r.gmst)
+
+            h.data.data = Fp*hp.data.data + Fc*hc.data.data
+
+            SENSITIVITIES[sensitivity](psd, psdstart)
+
+            sn.append(lalsim.MeasureSNRFD(h, psd, psdstart, psdstop))
+        sn = np.array(sn)
+        snrs.append(np.sqrt(np.sum(np.square(sn))))
+
+    return snrs
 
 class ZPDF(object):
     def __init__(self, lam, kappa, zp, zmax, cosmo):
@@ -167,49 +151,41 @@ def calc_nex(df_det, default_settings, **kwargs):
 
 if __name__ == '__main__':
 
-    if sys.argv[1] == 'default':
-        default = True
-    else:
-        default = False
-        custom_params_file = sys.argv[1]
-    if sys.argv[2]:
-        snr_threshold = float(sys.argv[2])
-    else:
-        snr_threshold = 0
-    if sys.argv[3]:
-        outfile = sys.argv[3]
-    else:
-        outfile = op.join(paths.data, 'mock_injections.h5')
+    config_file = sys.argv[1]
+    outfile = sys.argv[2]
 
     population_parameters = dict()
-    if not default:
-        with open(custom_params_file) as param_file:
-            for line in param_file:
-                (key, val) = line.split('=')
-                population_parameters[key.strip()] = float(val.strip())
 
-    custom_cosmo = None
-    if not default:
-        custom_cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'], population_parameters['w'], population_parameters['zmax'])
-        population_parameters['cosmo'] = custom_cosmo
-        print("Using the following custom population_parameters: " + str(population_parameters))
-    if default:
-        zpdf = ZPDF(lam=2.7, kappa=5.6, zp=1.9, zmax = 20, cosmo='default')
-    else:
-        zpdf = ZPDF(lam=population_parameters["lam"], kappa=population_parameters["kappa"], zp=population_parameters["zp"], zmax = population_parameters.get("zmax", 20), cosmo=population_parameters["cosmo"])
-    mpdf = PowerLawPDF(2.35, 5, 400)
+    with open(config_file) as param_file:
+        for line in param_file:
+            (key, val) = line.split('=')
+            population_parameters[key.strip()] = val.strip()
+            try:
+                population_parameters[key.strip()] = float(val.strip())
+            except ValueError:
+                pass
+    
+    snr_threshold = population_parameters.pop('snr_threshold', 0)
+    ndraw = int(population_parameters.pop('ndraw', 1000000))
+    sensitivity = population_parameters.pop('sensitivity', 'aLIGO')
+    detectors = population_parameters.pop('detectors', 'H1,L1').split(',')
+        
+    custom_cosmo = intensity_models.FlatwCDMCosmology(population_parameters['h'], population_parameters['Om'], population_parameters['w'], population_parameters['zmax'])
+    population_parameters['cosmo'] = custom_cosmo
+    print("Using the following custom population_parameters: " + str(population_parameters))
+    
+    zpdf = ZPDF(lam=population_parameters["lam"], kappa=population_parameters["kappa"], zp=population_parameters["zp"], zmax = population_parameters.get("zmax", 20), cosmo=population_parameters["cosmo"])
+    mpdf = PowerLawPDF(1.8, population_parameters["mbh_min"], 400)
 
     #rng = np.random.default_rng(333165393797366967556667466879860422123)
     rng = np.random.default_rng()
-
-    ndraw = int(1e8)
 
     #df = pd.DataFrame(columns = ['m1', 'q', 'z', 'iota', 'ra', 'dec', 'psi', 'gmst', 's1x', 's1y', 's1z', 's2x', 's2y', 's2z', 'pdraw_mqz', 'SNR_H1', 'SNR_L1', 'SNR_V1', 'SNR'])
     print("drawing zs and ms")
     z = zpdf.icdf(rng.uniform(low=0, high=1, size=ndraw))
     m = mpdf.icdf(rng.uniform(low=0, high=1, size=ndraw))
     print("drawing mts")
-    mtpdf = PowerLawPDF(2, m+5, 2*m)
+    mtpdf = PowerLawPDF(2, m+population_parameters['mbh_min'], 2 * m)
 
     mt = mtpdf.icdf(rng.uniform(low=0, high=1, size=ndraw))
 
@@ -231,17 +207,13 @@ if __name__ == '__main__':
 
     print("assigning spins")
 
-    s1x, s1y, s1z = rng.normal(loc=0, scale=0.2/np.sqrt(3), size=(3,ndraw))
-    s2x, s2y, s2z = rng.normal(loc=0, scale=0.2/np.sqrt(3), size=(3,ndraw))
+    s1x, s1y, s1z = 0,0,0#rng.normal(loc=0, scale=0.2/np.sqrt(3), size=(3,ndraw))
+    s2x, s2y, s2z = 0,0,0#rng.normal(loc=0, scale=0.2/np.sqrt(3), size=(3,ndraw))
 
     print("calculating dLs")
 
-    if default:
-        dL = Planck18.luminosity_distance(z).to(u.Gpc).value
-        dm1sz_dm1ddl = weighting.dm1sz_dm1ddl(z, cosmo=None)
-    else:
-        dm1sz_dm1ddl = weighting.dm1sz_dm1ddl(z, cosmo=population_parameters['cosmo'])
-        dL = population_parameters['cosmo'].dL(z)
+    dm1sz_dm1ddl = weighting.dm1sz_dm1ddl(z, cosmo=population_parameters['cosmo'])
+    dL = population_parameters['cosmo'].dL(z)
 
     df = pd.DataFrame({
         'm1': m,
@@ -264,19 +236,20 @@ if __name__ == '__main__':
         'dm1sz_dm1ddl': dm1sz_dm1ddl
     })
     if snr_threshold > 0:
-        df = compute_snrs(df)
+        df['SNR'] = compute_snrs(df, detectors=detectors, sensitivity=sensitivity)
     else:
         df['SNR'] = 10000000
-    p_pop_numerator = weighting.pop_wt(np.array(df['m1']), np.array(df['q']), np.array(df['z']), default=default, **population_parameters)
+    p_pop_numerator = weighting.pop_wt(np.array(df['m1']), np.array(df['q']), np.array(df['z']), default=False, **population_parameters)
 
     df['p_pop_weight'] = p_pop_numerator / df['pdraw_mqz']
     df['p_pop_numerator'] = p_pop_numerator
 
     random_number = rng.uniform(low=0, high=1, size = len(p_pop_numerator))
     sel = random_number < (df['p_pop_weight'] / np.max(df['p_pop_weight']))
-    df_det = df[df['SNR'] > snr_threshold][sel]
+    population_samples = df[sel]
+    df_det = population_samples[population_samples['SNR'] > snr_threshold]
 
-    print(f"Retained {len(df_det)} samples after rejection sampling.")
+    print(f"Retained {len(df_det)} samples after rejection sampling and applying snr cut.")
 
     df_det.to_hdf(outfile, key='true_parameters')
 

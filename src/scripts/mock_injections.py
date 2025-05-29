@@ -11,6 +11,7 @@ from tqdm import tqdm, trange
 import weighting
 import scipy.integrate as sint
 import intensity_models
+from fisher_snrs import compute_snrs
 
 SENSITIVITIES = {'aLIGO': lalsim.SimNoisePSDaLIGODesignSensitivityP1200087,
                 'aplus': lalsim.SimNoisePSDaLIGOAPlusDesignSensitivityT1800042,
@@ -22,7 +23,7 @@ def next_pow_2(x):
         np2 = np2 << 1
     return np2
 
-def compute_snrs(d, detectors = ['H1', 'L1'], sensitivity = 'aLIGO', fmin = 20, fmax = 2048, psdstart = 20):
+def compute_snrs_old(d, detectors = ['H1', 'L1'], sensitivity = 'aLIGO', fmin = 20, fmax = 2048, psdstart = 20):
     psdstop = 0.95*fmax
     snrs = []
     for _, r in tqdm(d.iterrows(), total=len(d)):
