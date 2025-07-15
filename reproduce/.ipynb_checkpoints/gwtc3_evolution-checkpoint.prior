@@ -1,5 +1,5 @@
-h = 0.674
-Om = 0.315
+h = .674
+Om = .315
 w = -1
 a = TruncatedNormal(2.35, 2, low=-1.65, high=6.35)
 b = TruncatedNormal(1.9, 2, low=-2.1, high=5.9)
@@ -15,3 +15,4 @@ zp = TruncatedNormal(1.9, 1, low=0, high=3.9)
 mpisndot = Uniform(low=-2, high=8)
 zmax = 1.9
 mbh_min = 5.0
+delta_m= 2.5

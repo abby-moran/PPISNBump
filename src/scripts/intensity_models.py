@@ -12,23 +12,27 @@ import numpy as np
 import numpyro 
 import numpyro.distributions as dist
 from utils import jnp_cumtrapz, sample_parameters_from_dict, log_expit
+from jax.scipy.ndimage import map_coordinates
 
+@jax.jit
 def mean_mbh_from_mco(mco, mpisn, mbhmax):
     """The mean black hole mass from the core-mass to remnant-mass relation.
     
-    :param mco: The CO core mass.
-    :param mpisn: The BH mass at which the relation starts to turn over.
+    :param mco: The CO core mass. shape (1, nmco, 1)
+    :param mpisn: The BH mass at which the relation starts to turn over. shape (n_z,1,1)
     :param mbhmax: The maximum BH mass achieved by the relation.
     """
+    #jax.debug.print('mpisn {}', mpisn.shape)
+    #jax.debug.print('mco {}', mco.shape)
     a = 1 / (4*(mpisn - mbhmax))
     mcomax = 2*mbhmax - mpisn
     return jnp.where(mco < mpisn, mco, mbhmax + a*jnp.square(mco - mcomax))
-
+@jax.jit
 def largest_mco(mpisn, mbhmax):
     """The largest CO core mass with positive BH masses."""
     mcomax = 2*mbhmax - mpisn
     return mcomax + jnp.sqrt(4*mbhmax*(mbhmax - mpisn))
-
+@jax.jit
 def log_dNdmCO(mco, a, b):
     r"""The broken power law CO core mass function.
     
@@ -41,12 +45,12 @@ def log_dNdmCO(mco, a, b):
     mtr = 20.0
     x = mco/mtr
     return jnp.where(mco < mtr, -a*jnp.log(x), -b*jnp.log(x))
-
+@jax.jit
 def smooth_log_dNdmCO(xx, a, b):
     xtr = 20
     delta = 0.05
     return -a * jnp.log(xx / xtr) + delta * (a - b) * jnp.log(0.5 * (1 + (xx/xtr)**(1/delta)))
-
+@jax.jit
 def log_smooth_turnon(m, mmin, width=0.05):
     """A function that smoothly transitions from 0 to 1.
     
@@ -57,7 +61,7 @@ def log_smooth_turnon(m, mmin, width=0.05):
     dm = mmin*width
 
     return np.log(2) - jnp.log1p(jnp.exp(-(m-mmin)/dm))
-
+@jax.jit
 def mmin_log_smooth_turnon(m, delta_m, mmin):
     """Log of a function that smoothly transitions from 0 to 1 over the interval [mmin, mmin + delta_m].
     Written to be consistent with Planck taper turnon in powerlaw+peak in LVK population papers
@@ -369,75 +373,24 @@ coords = {
     'q_grid': np.linspace(0, 1, 129)[1:],
     'z_grid': np.expm1(np.linspace(np.log1p(0), np.log1p(20), 128))
 }
-
+@jax.jit
 def get_deterministic_parameters(sample):
     kappa = numpyro.deterministic('kappa', sample['lam'] + sample['dkappa'])
     fpl = numpyro.deterministic('fpl', jnp.exp(sample['log_fpl']))
     mbhmax = numpyro.deterministic('mbhmax', sample['mpisn'] + sample['dmbhmax'])   
     return dict(kappa=kappa, fpl=fpl, mbhmax=mbhmax)
 
-def pop_cosmo_model_old(m1s_det, qs, dls, pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel, Ndraw, evolution = False, zmax=20, fixed_cosmo_params = None):
-    m1s_det, qs, dls, pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel = map(jnp.array, (m1s_det, qs, dls, pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel))
 
-    nobs = m1s_det.shape[0]
-    nsamp = m1s_det.shape[1]
+def build_population_model(sample):
+    return LogDNDMDQDV(
+        a=sample['a'], b=sample['b'], c=sample['c'],
+        mpisn=sample['mpisn'], mpisndot=sample['mpisndot'],
+        mbhmax=sample['mbhmax'], sigma=sample['sigma'], fpl=sample['fpl'],
+        beta=sample['beta'], lam=sample['lam'], kappa=sample['kappa'], zp=sample['zp'],
+        zmax=sample['zmax'], mbh_min=sample['mbh_min'], delta_m=sample['delta_m']
+    )
 
-    nsel = m1s_det_sel.shape[0]
-
-    log_pdraw = jnp.log(pdraw)
-    log_pdraw_sel = jnp.log(pdraw_sel)
-
-    if fixed_cosmo_params is None:
-        h,Om,w = cosmo_parameters()
-    else:
-        h = fixed_cosmo_params['h']
-        Om = fixed_cosmo_params['Om']
-        w = fixed_cosmo_params['w']
-
-    a,b,c,mpisn,mbhmax,sigma,beta,fpl = mass_parameters()
-    lam,kappa,zp = redshift_parameters()
-
-    cosmo = FlatwCDMCosmology(h, Om, w, zmax=zmax)
-
-    if not evolution:
-        mpisndot = 0
-    else:
-        mpisndot = evolve_parameters()
-        
-    log_dN = LogDNDMDQDV_evolve(a=a, b=b, c=c, mpisn=mpisn, mpisndot=mpisndot, mbhmax=mbhmax, sigma=sigma, fpl=fpl, beta=beta, lam=lam, kappa=kappa, zp=zp, zmax=zmax)
-    zs = cosmo.z_of_dL(dls)
-    m1s = m1s_det / (1 + zs)
-
-    log_wts = log_dN(m1s, qs, zs) - 2*jnp.log1p(zs) + jnp.log(cosmo.dVCdz(zs)) - jnp.log(cosmo.ddL_dz(zs)) - log_pdraw
-    log_like = jss.logsumexp(log_wts, axis=1) - jnp.log(nsamp)
-    log_like = jnp.nan_to_num(jnp.nan_to_num(jnp.sum(log_like), nan=-np.inf))
-
-    _ = numpyro.factor('loglike', log_like)
-
-    zs_sel = cosmo.z_of_dL(dls_sel)
-    m1s_sel = m1s_det_sel / (1 + zs_sel)
-
-    log_sel_wts = log_dN(m1s_sel, qs_sel, zs_sel) - 2*jnp.log1p(zs_sel) + jnp.log(cosmo.dVCdz(zs_sel)) - jnp.log(cosmo.ddL_dz(zs_sel)) - log_pdraw_sel
-    log_mu_sel = jss.logsumexp(log_sel_wts) - jnp.log(Ndraw)
-    _ = numpyro.factor('selfactor', jnp.nan_to_num(jnp.nan_to_num(-nobs*log_mu_sel, nan=-np.inf)))
-
-    log_mu2 = jss.logsumexp(2*log_sel_wts) - 2*jnp.log(Ndraw)
-    log_s2 = log_mu2 + jnp.log1p(-jnp.exp(2*log_mu_sel - jnp.log(Ndraw) - log_mu2))
-    _ = numpyro.deterministic('neff_sel', jnp.exp(2*log_mu_sel - log_s2))
-
-    mu_sel = jnp.exp(log_mu_sel)
-
-    R_unit = numpyro.sample('R_unit', dist.Normal(0, 1))
-    R = numpyro.deterministic('R', nobs/mu_sel + jnp.sqrt(nobs)/mu_sel*R_unit)
-
-    _ = numpyro.deterministic('neff', jnp.exp(2*jss.logsumexp(log_wts, axis=1) - jss.logsumexp(2*log_wts, axis=1)))
-
-    _ = numpyro.deterministic('mdNdmdVdt_fixed_qz', coords['m_grid']*R*jnp.exp(log_dN(coords['m_grid'], log_dN.qref, log_dN.zref)))
-    _ = numpyro.deterministic('dNdqdVdt_fixed_mz', log_dN.mref*R*jnp.exp(log_dN(log_dN.mref, coords['q_grid'], log_dN.zref)))
-    _ = numpyro.deterministic('dNdVdt_fixed_mq', log_dN.mref*R*jnp.exp(log_dN(log_dN.mref, log_dN.qref, coords['z_grid'])))
-    _ = numpyro.deterministic('hz', cosmo.h*cosmo.E(coords['z_grid']))
-
-
+    
 def pop_cosmo_model(m1s_det, qs, dls, pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel, Ndraw, priors=None):
     m1s_det, qs, dls, pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel = map(jnp.array, (m1s_det, qs, dls, pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw_sel))
 
@@ -450,25 +403,35 @@ def pop_cosmo_model(m1s_det, qs, dls, pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw
 
     sample = sample_parameters_from_dict(priors)
     deterministic_parameters = get_deterministic_parameters(sample)
-    sample.update(deterministic_parameters)
+    sample.update(deterministic_parameters) #sample from hyperparameters, set up cosmology (cosmo) and population model (dN)
 
     cosmo = FlatwCDMCosmology(sample['h'], sample['Om'], sample['w'], zmax=sample['zmax'])
-        
-    log_dN = LogDNDMDQDV(a=sample['a'], b=sample['b'], c=sample['c'], mpisn=sample['mpisn'], mpisndot=sample['mpisndot'], 
-                        mbhmax=sample['mbhmax'], sigma=sample['sigma'], fpl=sample['fpl'], beta=sample['beta'], 
-                        lam=sample['lam'], kappa=sample['kappa'], zp=sample['zp'], zmax=sample['zmax'], mbh_min=sample['mbh_min'], delta_m=sample['delta_m'])
+    log_dN = build_population_model(sample)  # ideally made outside if sample is static
+  
+    #log_dN = LogDNDMDQDV(a=sample['a'], b=sample['b'], c=sample['c'], mpisn=sample['mpisn'], mpisndot=sample['mpisndot'], 
+     #                   mbhmax=sample['mbhmax'], sigma=sample['sigma'], fpl=sample['fpl'], beta=sample['beta'], 
+      #                  lam=sample['lam'], kappa=sample['kappa'], zp=sample['zp'], zmax=sample['zmax'], mbh_min=sample['mbh_min'], delta_m=sample['delta_m'])
 
     zs = cosmo.z_of_dL(dls)
-    m1s = m1s_det / (1 + zs)
+    m1s = m1s_det / (1 + zs) # convert to source-frame masses
 
+    # event-wise log weight for deteced events = log of pop density (model's differential merger rate density) 
+    #      + Jacobian from source to detector frame 
+    #      + cosmology factors (for volume element, D_L to z) + log_pdraw (corrects for non-uniform prior over parameter space)
     log_wts = log_dN(m1s, qs, zs) - 2*jnp.log1p(zs) + jnp.log(cosmo.dVCdz(zs)) - jnp.log(cosmo.ddL_dz(zs)) - log_pdraw
     log_like = jss.logsumexp(log_wts, axis=1) - jnp.log(nsamp)
     log_like = jnp.nan_to_num(jnp.nan_to_num(jnp.sum(log_like), nan=-np.inf))
+    
+    #log_like_per_event = jss.logsumexp(log_wts, axis=1) - jnp.log(nsamp)  # shape (nobs,)
+    #log_like_per_event = jnp.nan_to_num(log_like_per_event, nan=-np.inf)
+    #_=numpyro.deterministic("loglike", log_like_per_event)
 
     _ = numpyro.factor('loglike', log_like)
-    zs_sel = cosmo.z_of_dL(dls_sel)
+
+    zs_sel = cosmo.z_of_dL(dls_sel) 
     m1s_sel = m1s_det_sel / (1 + zs_sel)
 
+    # now get weights for injected events as with log_wts
     log_sel_wts = log_dN(m1s_sel, qs_sel, zs_sel) - 2*jnp.log1p(zs_sel) + jnp.log(cosmo.dVCdz(zs_sel)) - jnp.log(cosmo.ddL_dz(zs_sel)) - log_pdraw_sel
     log_mu_sel = jss.logsumexp(log_sel_wts) - jnp.log(Ndraw)
     _ = numpyro.factor('selfactor', jnp.nan_to_num(jnp.nan_to_num(-nobs*log_mu_sel, nan=-np.inf)))
@@ -481,13 +444,16 @@ def pop_cosmo_model(m1s_det, qs, dls, pdraw, m1s_det_sel, qs_sel, dls_sel, pdraw
     R_unit = numpyro.sample('R_unit', dist.Normal(0, 1))
     R = numpyro.deterministic('R', nobs/mu_sel + jnp.sqrt(nobs)/mu_sel*R_unit)
 
+    # get some derived quantities for later
+    # effective sample size for weights
     _ = numpyro.deterministic('neff', jnp.exp(2*jss.logsumexp(log_wts, axis=1) - jss.logsumexp(2*log_wts, axis=1)))
 
+    # differential merger rate with respect to mass, at fixed reference values of mass ratio, z
     _ = numpyro.deterministic('mdNdmdVdt_fixed_qz', coords['m_grid']*R*jnp.exp(log_dN(coords['m_grid'], log_dN.qref, log_dN.zref)))
+
+    # now varying q at fixed mass, z and then varying z at fixed mass, q (redshift evolution of merger rate)
     _ = numpyro.deterministic('dNdqdVdt_fixed_mz', log_dN.mref*R*jnp.exp(log_dN(log_dN.mref, coords['q_grid'], log_dN.zref)))
     _ = numpyro.deterministic('dNdVdt_fixed_mq', log_dN.mref*R*jnp.exp(log_dN(log_dN.mref, log_dN.qref, coords['z_grid'])))
+
+    # dimensionless Hubble parameter at z
     _ = numpyro.deterministic('hz', cosmo.h*cosmo.E(coords['z_grid']))
-    """
-    else:
-        return log_like + jnp.nan_to_num(jnp.nan_to_num(-nobs*log_mu_sel, nan=-np.inf))
-    """

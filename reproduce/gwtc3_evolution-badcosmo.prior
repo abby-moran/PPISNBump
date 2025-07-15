@@ -1,0 +1,18 @@
+h = 0.274
+Om = 0.315
+w = -1
+a = TruncatedNormal(2.35, 2, low=-1.65, high=6.35)
+b = TruncatedNormal(1.9, 2, low=-2.1, high=5.9)
+c = TruncatedNormal(4, 2, low=0, high=8)
+mpisn = TruncatedNormal(35.0, 5.0, low=20.0, high=50.0)
+dmbhmax = TruncatedNormal(3.0, 2.0, low=0.5, high=7.0)
+sigma = TruncatedNormal(0.1, 0.1, low=0.05)
+beta = Normal(0, 2)
+log_fpl = Uniform(np.log(1e-2), np.log(0.5))
+lam = TruncatedNormal(2.7, 2.0, low=-1.3, high=6.7)
+dkappa = TruncatedNormal(2.9, 2.0, low=1, high=6.9)
+zp = TruncatedNormal(1.9, 1, low=0, high=3.9)
+mpisndot = Uniform(low=-2, high=8)
+zmax = 1.9
+mbh_min = 5.0
+delta_m=2.5
