@@ -219,14 +219,14 @@ class LogDNDM(object):
         log_dNdm = self.interp_2d_dndmpisn(m, z)
 
         #log_dNdm = jnp.where(m <= self.log_dndm_pisn.mbh_grid[0], log_dNdm[0], log_dNdm)
-        log_dNdm = jnp.where(m >= self.log_dndm_pisn.mbh_grid[-1], np.NINF, log_dNdm)
+        log_dNdm = jnp.where(m >= self.log_dndm_pisn.mbh_grid[-1], -np.inf, log_dNdm)
         
         mbhmax_at_samples = jnp.array(self.mpisn + self.mpisndot * (1 - 1/(1+z)) + self.dmbhmax)
 
         log_dNdmbhmax_at_samples = self.interp_2d_dndmpisn(mbhmax_at_samples, z)
         log_high_mass_tail = -self.c*jnp.log(jnp.divide(m, mbhmax_at_samples))    
         log_dNdm = jnp.logaddexp(log_dNdm, jnp.log(self.fpl) + log_dNdmbhmax_at_samples + log_high_mass_tail  + log_smooth_turnon(m, mbhmax_at_samples))
-        #log_dNdm = jnp.where(m < self.mbh_min, np.NINF, log_dNdm)
+        #log_dNdm = jnp.where(m < self.mbh_min, -np.inf, log_dNdm)
         logwindow = mmin_log_smooth_turnon(m, delta_m=self.delta_m, mmin= self.mbh_min)
         log_dNdm = log_dNdm + logwindow
         return log_dNdm 
