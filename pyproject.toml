@@ -1,0 +1,45 @@
+[project]
+name = "bumpcosmology"
+version = "0.1.0"
+description = "Bump Cosmology package"
+authors = [
+    { name = "Abigail Moran", email = "am6261@columbia.edu"},
+    { name = "Jacob Golomb", email = "jacob.golomb@gmail.com" },
+    { name = "Maximiliano Isi", email = "max.isi@ligo.org" },
+    { name = "Will M. Farr", email = "will.farr@stonybrook.edu" },
+]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = "==3.11.10"
+dependencies = [
+    "arviz",
+    "astropy",
+    "h5py",
+    "ipywidgets",
+    "numpyro==0.18",
+    "jax>=0.4.25,<0.6.1",
+    "jaxlib==0.4.38; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "jupyterlab",
+    "lalsuite",
+    "matplotlib",
+    "numpy",
+    "numpyro",
+    "tables",
+    "seaborn",
+    "tqdm",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "bumpcosmology",
+    "jupyter",
+    "pre-commit",
+    "pytest"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["src"] 
